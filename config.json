@@ -1,0 +1,11 @@
+{
+  "hotelNo": 74733,
+  "hotelLabel": "ホテルミラコスタ",
+  "roomKeywords": ["ハーバービュー"],
+  "adultNum": 4,
+  "roomNum": 1,
+  "periodStart": "2026-12-31",
+  "periodEnd": "2027-01-05",
+  "checkFullStay": true,
+  "officialSearchUrl": "https://www.tokyodisneyresort.jp/hotel/dhm/"
+}

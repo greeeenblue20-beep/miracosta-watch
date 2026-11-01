@@ -11,17 +11,18 @@
 ## セットアップ
 
 1. **楽天アプリ登録**: https://webservice.rakuten.co.jp/ でアプリを新規作成し、アプリID と アクセスキー を取得
-   - 許可するWebサイト(Referer)の入力を求められたら GitHub リポジトリのURLを入れ、同じ値を Secret `RAKUTEN_REFERER` にも登録
+   - アプリケーションタイプは「Webアプリケーション」、許可されたWebサイトは `github.com`(バックエンド型はIP指定になり Actions では使えない)
+   - API呼び出し時は Origin/Referer に https://github.com を付ける(`RAKUTEN_REFERER` で変更可)
 2. **ntfy**: スマホに「ntfy」アプリを入れ、`.env` の `NTFY_TOPIC` の値を購読(Subscribe)する
 3. **GitHub**: 公開リポジトリを作り push。Settings → Secrets and variables → Actions に以下を登録
-   - `RAKUTEN_APP_ID` / `RAKUTEN_ACCESS_KEY` / `NTFY_TOPIC`(/ 必要なら `RAKUTEN_REFERER`)
+   - `RAKUTEN_APP_ID` / `RAKUTEN_ACCESS_KEY` / `NTFY_TOPIC`
 4. Actions タブで `miracosta-watch` を「Run workflow」して手動実行し、ログに各日の結果が出ればOK
 
 ## ローカル確認
 
 ```
 node check.js --dry --fixture test/fixture.json   # ダミーデータで通知文を確認
-node check.js --dry                               # 実APIで確認(環境変数が必要・通知はしない)
+node --env-file=.env check.js --dry               # 実APIで確認(通知はしない)
 ```
 
 ## 終了

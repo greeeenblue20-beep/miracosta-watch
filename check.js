@@ -51,13 +51,17 @@ async function fetchVacancy(stay) {
     searchPattern: "1",
     hits: "30",
   });
-  const headers = {};
-  if (process.env.RAKUTEN_REFERER) headers.Referer = process.env.RAKUTEN_REFERER;
+  // Webアプリケーション型のアプリは、登録した「許可されたWebサイト」の Origin/Referer が必要
+  const site = process.env.RAKUTEN_REFERER || "https://github.com/";
+  const headers = { Referer: site, Origin: new URL(site).origin };
   const res = await fetch(`${API_URL}?${params}`, { headers });
   const body = await res.json().catch(() => ({}));
   // 空室なしは 404 not_found で返る
   if (res.status === 404 && body.error === "not_found") return null;
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${body.error || ""} ${body.error_description || ""}`.trim());
+  if (!res.ok) {
+    const detail = body.error_description || (body.errors && body.errors.errorMessage) || body.error || "";
+    throw new Error(`HTTP ${res.status} ${detail}`.trim());
+  }
   return body;
 }
 

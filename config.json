@@ -1,11 +1,24 @@
 {
-  "hotelNo": 74733,
-  "hotelLabel": "ホテルミラコスタ",
-  "roomKeywords": ["ハーバービュー"],
-  "adultNum": 4,
-  "roomNum": 1,
-  "periodStart": "2026-12-31",
-  "periodEnd": "2027-01-05",
-  "checkFullStay": true,
-  "officialSearchUrl": "https://www.tokyodisneyresort.jp/hotel/dhm/"
+  "watches": [
+    {
+      "name": "ミラコスタ 年末年始",
+      "hotelNo": 74733,
+      "hotelLabel": "ホテルミラコスタ",
+      "roomKeywords": ["ハーバービュー"],
+      "adultNum": 4,
+      "roomNum": 1,
+      "range": { "start": "2026-12-31", "end": "2027-01-05", "fullStay": true },
+      "officialUrl": "https://www.tokyodisneyresort.jp/hotel/dhm/"
+    },
+    {
+      "name": "ミラコスタ 日曜泊",
+      "hotelNo": 74733,
+      "hotelLabel": "ホテルミラコスタ",
+      "roomKeywords": ["ハーバービュー"],
+      "adultNum": 4,
+      "roomNum": 1,
+      "weekly": { "weekdays": [0], "daysAhead": 150 },
+      "officialUrl": "https://www.tokyodisneyresort.jp/hotel/dhm/"
+    }
+  ]
 }

@@ -1,6 +1,10 @@
-// ミラコスタ空室監視: 楽天トラベル空室検索APIで対象部屋の空きを確認し、新しく空いたら ntfy で通知する
+// ホテル空室監視: 楽天トラベル空室検索APIで config.json の各監視条件を確認し、新しく空いたら ntfy で通知する
 // 環境変数: RAKUTEN_APP_ID, RAKUTEN_ACCESS_KEY, NTFY_TOPIC (任意: RAKUTEN_REFERER)
 // 実行: node check.js        (--dry で通知せず結果だけ表示 / --fixture <file> でAPIの代わりにJSONファイルを使う)
+//
+// config.json の watches[] 1件 = 1つの監視条件。日程は次のどちらかで指定する
+//   range:  { start, end, fullStay }  start〜end の各1泊 (+ fullStay=true なら全期間の連泊)
+//   weekly: { weekdays, daysAhead, nights } 今日から daysAhead 日先までの指定曜日(0=日〜6=土)にチェックイン
 
 const fs = require("fs");
 const path = require("path");
@@ -20,34 +24,45 @@ const addDays = (ymd, n) => {
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 };
+const weekday = (ymd) => new Date(ymd + "T00:00:00Z").getUTCDay();
 const todayJst = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
-const mdLabel = (ymd) => `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8, 10))}`;
+const mdLabel = (ymd) => `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8, 10))}(${"日月火水木金土"[weekday(ymd)]})`;
+const stayLabel = (s) =>
+  s.checkout === addDays(s.checkin, 1) ? `${mdLabel(s.checkin)}泊` : `${mdLabel(s.checkin)}〜${mdLabel(s.checkout)}連泊`;
 
-// 確認する宿泊パターン: 期間内の各1泊 + 期間全体の連泊
-function buildStays() {
+// 監視条件から、確認する宿泊パターン(今日以降のみ)を作る
+function buildStays(watch) {
   const stays = [];
   const today = todayJst();
-  for (let d = config.periodStart; d < config.periodEnd; d = addDays(d, 1)) {
-    if (d >= today) stays.push({ checkin: d, checkout: addDays(d, 1) });
+  if (watch.range) {
+    const { start, end, fullStay } = watch.range;
+    for (let d = start; d < end; d = addDays(d, 1)) {
+      if (d >= today) stays.push({ checkin: d, checkout: addDays(d, 1) });
+    }
+    if (fullStay && start >= today && addDays(start, 1) < end) stays.push({ checkin: start, checkout: end });
   }
-  if (config.checkFullStay && config.periodStart >= today && addDays(config.periodStart, 1) < config.periodEnd) {
-    stays.push({ checkin: config.periodStart, checkout: config.periodEnd });
+  if (watch.weekly) {
+    const { weekdays, daysAhead, nights = 1 } = watch.weekly;
+    for (let i = 0; i <= daysAhead; i++) {
+      const d = addDays(today, i);
+      if (weekdays.includes(weekday(d))) stays.push({ checkin: d, checkout: addDays(d, nights) });
+    }
   }
   return stays;
 }
 
-async function fetchVacancy(stay) {
+async function fetchVacancy(q) {
   if (FIXTURE) return JSON.parse(fs.readFileSync(FIXTURE, "utf8"));
   const params = new URLSearchParams({
     applicationId: process.env.RAKUTEN_APP_ID || "",
     accessKey: process.env.RAKUTEN_ACCESS_KEY || "",
     format: "json",
     formatVersion: "2",
-    hotelNo: String(config.hotelNo),
-    checkinDate: stay.checkin,
-    checkoutDate: stay.checkout,
-    adultNum: String(config.adultNum),
-    roomNum: String(config.roomNum),
+    hotelNo: String(q.hotelNo),
+    checkinDate: q.checkin,
+    checkoutDate: q.checkout,
+    adultNum: String(q.adultNum),
+    roomNum: String(q.roomNum),
     searchPattern: "1",
     hits: "30",
   });
@@ -90,9 +105,11 @@ function extractRooms(json) {
   return rooms;
 }
 
-const matchesTarget = (room) => {
+// roomKeywords が空なら全部屋が対象
+const matchesTarget = (watch, room) => {
+  const keywords = watch.roomKeywords || [];
   const text = `${room.roomName || ""} ${room.planName || ""}`;
-  return config.roomKeywords.some((k) => text.includes(k));
+  return keywords.length === 0 || keywords.some((k) => text.includes(k));
 };
 
 function loadState() {
@@ -120,75 +137,83 @@ async function notify(title, message, url) {
 }
 
 async function main() {
-  const stays = buildStays();
-  if (stays.length === 0) {
+  // 監視条件ごとの問い合わせを作る。同じホテル・日程・人数の問い合わせは1回にまとめる
+  const queries = new Map();
+  for (const watch of config.watches) {
+    for (const stay of buildStays(watch)) {
+      const qKey = [watch.hotelNo, stay.checkin, stay.checkout, watch.adultNum, watch.roomNum].join("_");
+      if (!queries.has(qKey)) {
+        queries.set(qKey, { ...stay, hotelNo: watch.hotelNo, adultNum: watch.adultNum, roomNum: watch.roomNum, watches: [] });
+      }
+      queries.get(qKey).watches.push(watch);
+    }
+  }
+  if (queries.size === 0) {
     console.log("監視期間が終了しています");
     return;
   }
 
   const prev = loadState();
   const nowAvailable = {};
+  const erroredKeys = [];
   const errors = [];
 
-  for (const stay of stays) {
+  for (const [qKey, q] of queries) {
+    const watch = q.watches[0];
+    const label = stayLabel(q);
     try {
-      const json = await fetchVacancy(stay);
-      const rooms = json ? extractRooms(json).filter(matchesTarget) : [];
-      const label = stay.checkout === addDays(stay.checkin, 1)
-        ? `${mdLabel(stay.checkin)}泊`
-        : `${mdLabel(stay.checkin)}〜${mdLabel(stay.checkout)}連泊`;
-      console.log(`${label}: ${rooms.length ? rooms.map((r) => r.roomName).join(" / ") : "空きなし"}`);
+      const json = await fetchVacancy(q);
+      const rooms = json ? extractRooms(json).filter((r) => q.watches.some((w) => matchesTarget(w, r))) : [];
+      console.log(`${watch.hotelLabel} ${label} 大人${q.adultNum}: ${rooms.length ? rooms.map((r) => r.roomName).join(" / ") : "空きなし"}`);
       for (const r of rooms) {
-        const key = `${stay.checkin}_${stay.checkout}_${r.planId || ""}_${r.roomClass || r.roomName}`;
-        nowAvailable[key] = {
+        nowAvailable[`${qKey}_${r.planId || ""}_${r.roomClass || r.roomName}`] = {
+          hotelLabel: watch.hotelLabel,
+          officialUrl: watch.officialUrl,
           label,
           roomName: r.roomName,
-          planName: r.planName,
           total: r.dailyCharge.total,
           url: r.reserveUrl,
         };
       }
     } catch (e) {
-      errors.push(`${stay.checkin}: ${e.message}`);
-      console.error(`${stay.checkin}: ${e.message}`);
+      erroredKeys.push(qKey);
+      errors.push(`${watch.hotelLabel} ${label}: ${e.message}`);
+      console.error(`${watch.hotelLabel} ${label}: ${e.message}`);
     }
     await new Promise((r) => setTimeout(r, 1500)); // APIへの連続アクセスを避ける
   }
 
-  // 前回なかった空きだけ通知する
-  const fresh = Object.entries(nowAvailable).filter(([k]) => !prev.available[k]);
-  if (fresh.length) {
-    const lines = fresh.map(([, v]) =>
-      `・${v.label} ${v.roomName}${v.total ? `(1泊目 ${Number(v.total).toLocaleString()}円)` : ""}`
-    );
+  // 前回なかった空きだけ、ホテルごとにまとめて通知する
+  const fresh = Object.entries(nowAvailable).filter(([k]) => !prev.available[k]).map(([, v]) => v);
+  const byHotel = new Map();
+  for (const v of fresh) byHotel.set(v.hotelLabel, [...(byHotel.get(v.hotelLabel) || []), v]);
+  for (const [hotelLabel, items] of byHotel) {
+    const lines = items.map((v) => `・${v.label} ${v.roomName}${v.total ? `(1泊目 ${Number(v.total).toLocaleString()}円)` : ""}`);
     const msg = [
       ...lines,
       "",
       "楽天で空きが出ました。公式でも空いている可能性があるので、公式サイトもすぐ確認してください。",
-      `公式: ${config.officialSearchUrl}`,
-    ].join("\n");
-    await notify(`${config.hotelLabel} 空きあり!`, msg, fresh[0][1].url);
+      items[0].officialUrl ? `公式: ${items[0].officialUrl}` : "",
+    ].join("\n").trim();
+    await notify(`${hotelLabel} 空きあり!`, msg, items[0].url);
   }
 
   // 全リクエストが失敗した時だけ1回通知(連続で通知しない)
-  const allFailed = errors.length === stays.length;
+  const allFailed = erroredKeys.length === queries.size;
   if (allFailed && !prev.errorNotified) {
-    await notify(`${config.hotelLabel} 監視エラー`, errors.join("\n"));
+    await notify("ホテル空室監視 エラー", errors.slice(0, 10).join("\n"));
   }
 
+  // エラーになった問い合わせは前回の状態を引き継いで、復旧時の重複通知を防ぐ
+  const kept = Object.fromEntries(
+    Object.entries(prev.available).filter(([k]) => erroredKeys.some((q) => k.startsWith(q + "_")))
+  );
   const next = {
-    // エラーになった日は前回の状態を引き継いで、復旧時の重複通知を防ぐ
-    available: allFailed ? prev.available : { ...pickErrored(prev.available, errors), ...nowAvailable },
-    errorNotified: allFailed ? true : false,
+    available: allFailed ? prev.available : { ...kept, ...nowAvailable },
+    errorNotified: allFailed,
     checkedAt: new Date().toISOString(),
   };
   if (!DRY && !FIXTURE) fs.writeFileSync(STATE_FILE, JSON.stringify(next, null, 2) + "\n");
-}
-
-// 一部の日だけエラーの場合、その日の前回状態は残す
-function pickErrored(prevAvailable, errors) {
-  const erroredDates = new Set(errors.map((e) => e.split(":")[0]));
-  return Object.fromEntries(Object.entries(prevAvailable).filter(([k]) => erroredDates.has(k.split("_")[0])));
 }
 
 main().catch((e) => {

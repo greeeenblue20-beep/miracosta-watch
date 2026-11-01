@@ -1,4 +1,4 @@
-name: miracosta-watch
+name: hotel-watch
 
 on:
   schedule:
@@ -33,7 +33,9 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
           git add state.json
-          # checkedAt だけの変化ではコミットしない
-          if git diff --cached -U0 state.json | grep -E '^[+-] ' | grep -vq checkedAt; then
+          # checkedAt だけの変化ではコミットしない。ただし最終コミットから30日以上空いたら、
+          # GitHub が60日無更新で定期実行を止めるのを防ぐためコミットする
+          stale=$(( $(date +%s) - $(git log -1 --format=%ct) > 30*24*3600 ))
+          if git diff --cached -U0 state.json | grep -E '^[+-] ' | grep -vq checkedAt || [ "$stale" = 1 ]; then
             git commit -m "update state" && git push
           fi
